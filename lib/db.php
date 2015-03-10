@@ -3,32 +3,92 @@
 
 
 
-class DirectDB {
+class DB {
 	
 	
 	
 	
-	private $oMysqli = null;
+	private $oDB = null;
+	
+	public $bLog = false;
+	public $sLogFile = '';
+	public $aTableMap = array();
 	
 	private $aDoNotEscape = array('NOW()');
 	
-	public $aTableMap = array();
-	
-	public $sEscapeTable = '';
-	
-	public $bDump = false;
-	public $sLogFile = '';
 	
 	
 	
-	
-	public function __construct ($aAccessData) {
+	public function __construct ($sHost, $sDaba, $sUser, $sPass) {
 		
-		if (!isset($aAccessData['sHost'])) {
-			$aAccessData['sHost'] = 'localhost';
+		$this->oDB = mysqli_connect($sHost, $sUser, $sPass, $sDaba);
+		if (mysqli_connect_errno($this->oDB)) {
+			exit('failed to connect to ' . $sDaba . ' on ' . $sHost);
 		}
 		
-		$this->oMysqli = mysqli_connect($aAccessData['sHost'], $aAccessData['sUser'], $aAccessData['sPass'], $aAccessData['sDaba']);
+	}
+	
+	
+	
+	
+	public function __destruct () {
+		
+		mysqli_close($this->oDB);
+		
+	}
+	
+	
+	
+	
+	public function bCreateTable ($sTable, $sPrimary, $aColums) {
+		
+		$sCI = "\t\t\t";
+		
+		foreach ($aColums as $sName => $sAttrs) {
+			if (is_array($sAttrs)) {
+				$sLine = implode(' ', array(
+					$aAttrs['sField'],
+					$aAttrs['sType'],
+					$aAttrs['bNull'] ? 'NULL' : 'NOT NULL',
+					($aAttrs['sDefault'] === '') ? '' : 'DEFAULT ' . $aAttrs['sDefault'],
+					$aAttrs['sExtra'],
+				));
+				$aColumnQueries []= $sCI . $sAttrs;
+			} else {
+				$sLine = $sName . ' ' . $sAttrs;
+				$aColumnQueries []= $sCI . $sLine;
+			}
+		}
+		
+		$sQuery = '
+			CREATE TABLE ' . $sTable . ' (
+				' . $sPrimary . ' INT NOT AUTO INCREMENT,
+				' . implode("\n", $aColumnsQueries) . ',
+				PRIMARY KEY (' . $sPrimary . ')
+			);
+		';
+		
+		$bSuccess = $this->mQuery($sQuery);
+		
+		return $bSuccess;
+		
+	}
+	
+	
+	
+	
+	public function bAddColumn ($sTable, $aColumn) {
+		
+		
+		
+	}
+	
+	
+	
+	
+	public function aGetTableColumns ($sTable) {
+		
+		$aColumnData = $this->aSelectQuery("SHOW COLUMNS FROM " . $sTable);
 		
 	}
 	
@@ -41,10 +101,7 @@ class DirectDB {
 		
 		$aTables = array();
 		foreach ($aTablesResult as $oTable) {
-			foreach ($oTable as $sKey => $sValue) {
-				$sTable = $sValue;
-				break;
-			}
+			$sTable = $oTable->{'Tables_in_' . $this->sDaba};
 			$aTables []= $sTable;
 		}
 		
@@ -55,9 +112,9 @@ class DirectDB {
 	
 	
 	
-	public function oSelectOne ($sTableName, $mWhere = array(), $sSelectFields = '*') {
+	public function oSelectOne ($sTableName, $mWhere = array(), $sSelectFields = '*', $sExtra = '') {
 		
-		$aRows = $this->aSelect($sTableName, $mWhere, $sSelectFields);
+		$aRows = $this->aSelect($sTableName, $mWhere, $sSelectFields, $sExtra);
 		if (count($aRows) == 0) {
 			return null;
 		} else {
@@ -69,8 +126,7 @@ class DirectDB {
 	
 	
 	
-	
-	public function aSelect ($sTableName, $mWhere = array(), $sSelectFields = '*') {
+	public function aSelect ($sTableName, $mWhere = array(), $sSelectFields = '*', $sExtra = '') {
 		
 		$sTableName = $this->sConvertTableName($sTableName);
 		
@@ -79,10 +135,13 @@ class DirectDB {
 		$sQuery = "
 			SELECT " . $sSelectFields . " FROM " . $sTableName . "
 			" . $sWhere . "
+			" . $sExtra . "
 		";
-		$this->info($sQuery);
+		
+		$this->vLog($sQuery);
 		$aResult = $this->aSelectQuery($sQuery);
-		$this->info($aResult);
+		$this->vLog($aResult);
+		
 		return $aResult;
 		
 	}
@@ -92,13 +151,15 @@ class DirectDB {
 	
 	public function aSelectQuery ($sQuery) {
 		
-		$oResult = $this->query($sQuery);
+		$oResult = $this->mQuery($sQuery);
+		
 		if ($oResult === false) {
-			$this->vAutoError();
+			ODT::ec('ERROR: ' . mysqli_error($this->oDB));
 		}
+		
 		$aReturn = array();
 		while ($aRawRow = mysqli_fetch_array($oResult)) {
-			$oRow = new \stdClass();
+			$oRow = new stdClass();
 			foreach ($aRawRow as $sKey => $sValue) {
 				if (is_string($sKey)) {
 					$oRow->$sKey = $sValue;
@@ -106,6 +167,7 @@ class DirectDB {
 			}
 			$aReturn []= $oRow;
 		}
+		
 		return $aReturn;
 		
 	}
@@ -118,8 +180,8 @@ class DirectDB {
 		
 		$sTableName = $this->sConvertTableName($sTableName);
 		
-		$sColumns = "";
 		$sValues = "";
+		$sColumns = "";
 		$bFirst = true;
 		foreach ($mData as $sKey => $sValue) {
 			if ($bFirst) {
@@ -145,16 +207,17 @@ class DirectDB {
 			VALUES " . $sValues . "
 		";
 		
-		$this->info($sQuery);
-		$bSuccess = $this->query($sQuery);
-		$this->info($bSuccess);
+		$this->vLog($sQuery);
+		$bSuccess = $this->mQuery($sQuery);
+		$this->vLog($bSuccess);
 		if ($bSuccess === false) {
-			$this->vAutoError();
+			ODT::ec('ERROR: ' . mysqli_error($this->oDB));
 		}
 		if ($bSuccess === false) {
 			return false;
 		}
-		return mysqli_insert_id($this->getDB());
+		
+		return mysqli_insert_id($this->oDB);
 		
 	}
 	
@@ -162,24 +225,24 @@ class DirectDB {
 	
 	
 	
-	public function bUpdate ($sTableName, $mData, $mWhere = array()) {
+	public function bUpdate ($sTableName, $aData, $mWhere = array()) {
 		
 		$sTableName = $this->sConvertTableName($sTableName);
 		
 		$sSet = "";
 		$bFirst = true;
-		foreach ($mData as $sKey => $sValue) {
+		foreach ($aData as $sKey => $sValue) {
 			if ($bFirst) {
 				$bFirst = false;
 			} else {
-				$sSet .= ",";
+				$sSet .= ", ";
 			}
 			if (in_array($sValue, $this->aDoNotEscape)) {
 				$sEscapedValue = $sValue;
 			} else {
 				$sEscapedValue = "'" . $this->sEscape($sValue) . "'";
 			}
-			$sSet .= self::sProcessKey($sKey) . "=" . $sEscapedValue;
+			$sSet .= self::sProcessKey($sKey) . " = " . $sEscapedValue;
 		}
 		
 		$sWhere = $this->sMakeWhere($mWhere);
@@ -190,12 +253,13 @@ class DirectDB {
 			" . $sWhere . "
 		";
 		
-		$this->info($sQuery);
-		$mReturn = $this->query($sQuery);
-		$this->info($mReturn);
+		$this->vLog($sQuery);
+		$mReturn = $this->mQuery($sQuery);
+		$this->vLog($mReturn);
 		if ($mReturn === false) {
-			$this->vAutoError();
+			ODT::ec('ERROR: ' . mysqli_error($this->oDB));
 		}
+		
 		return $mReturn;
 		
 	}
@@ -215,66 +279,15 @@ class DirectDB {
 			" . $sWhere . "
 		";
 		
-		$this->info($sQuery);
-		$mReturn = $this->query($sQuery);
-		$this->info($mReturn);
+		$this->vLog($sQuery);
+		$mReturn = $this->mQuery($sQuery);
+		$this->vLog($mReturn);
 		if ($mReturn === false) {
-			$this->vAutoError();
+			ODT::ec('ERROR: ' . mysqli_error($this->oDB));
 		}
+		
 		return $mReturn;
 		
-	}
-	
-	
-	
-	
-	public function vAutoError () {
-		if (class_exists('\ODT')) {
-			if (get_class($this->getDB()) == 'mysqli') {
-				$sError = $this->getDB()->error;
-			} else {
-				$sError = $this->getDB()->sql_error();
-			}
-			\ODT::ec('ERROR: ' . $sError);
-			\ODT::ec($sQuery);
-		}
-	}
-	
-	
-	
-	
-	public function query ($sQuery) {
-		if (get_class($this->getDB()) == 'mysqli') {
-			return $this->getDB()->query($sQuery);
-		} else {
-			return $this->getDB()->sql_query($sQuery);
-		}
-	}
-	
-	
-	
-	
-	public function sEscape ($mValue) {
-		if (get_class($this->getDB()) == 'mysqli') {
-			$mValue = $this->getDB()->real_escape_string($mValue);
-		} else {
-			$mValue = $this->getDB()->quoteStr($mValue, $this->sEscapeTable);
-		}
-		return $mValue;
-	}
-	
-	
-	
-	
-	public function getDB () {
-		return $this->oMysqli;
-	}
-	
-	
-	
-	
-	public function __destruct () {
-		mysqli_close($this->oMysqli);
 	}
 	
 	
@@ -300,12 +313,13 @@ class DirectDB {
 					$sWhere .= self::sProcessKey($sKey) . " IN (" . implode(',', $aValues) . ")";
 				} else {
 					$sValue = $mValue;
-					$sWhere .= self::sProcessKey($sKey) . "='" . $this->sEscape($sValue) . "'";
+					$sWhere .= self::sProcessKey($sKey) . " = '" . $this->sEscape($sValue) . "'";
 				}
 			}
 		} else {
 			$sWhere = "WHERE " . $mWhere;
 		}
+		
 		return $sWhere;
 		
 	}
@@ -324,6 +338,7 @@ class DirectDB {
 			}
 			$sKey = implode('.', $aKeyParts);
 		}
+		
 		return $sKey;
 		
 	}
@@ -336,6 +351,7 @@ class DirectDB {
 		if (isset($this->aTableMap[$sTableName])) {
 			$sTableName = $this->aTableMap[$sTableName];
 		}
+		
 		return $sTableName;
 		
 	}
@@ -343,16 +359,34 @@ class DirectDB {
 	
 	
 	
+	public function sEscape ($sInput) {
+		
+		#return esc_sql($sInput);
+		return mysqli_real_escape_string($this->oDB, $sInput);
+		
+	}
 	
-	public function info ($mInfo) {
-		if (class_exists('\ODT')) {
-			if ($this->bDump) \ODT::dump($mInfo);
-			if ($this->sLogFile) \ODT::log($mInfo, $this->sLogFile);
-		}
+	
+	
+	
+	public function vLog ($mInfo) {
+		
+		if ($this->sLogFile) ODT::log($mInfo, $this->sLogFile);
+		if ($this->bLog) ODT::dump($mInfo);
+		
+	}
+	
+	
+	
+	
+	public function mQuery ($sQuery) {
+		
+		$this->vLog($sQuery);
+		return mysqli_query($this->oDB, $sQuery);
+		
 	}
 	
 	
 	
 	
 }
-
